@@ -1,0 +1,4 @@
+interface:
+  display_name: "Genie Development Assistant"
+  short_description: "Track development stages, decisions, and validation history"
+  default_prompt: "Use $genie to show the current development stage and recommend the next action."

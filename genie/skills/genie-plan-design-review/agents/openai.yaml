@@ -1,0 +1,4 @@
+interface:
+  display_name: "Genie Design Plan Review"
+  short_description: "Run a focused Genie workflow stage with history tracking"
+  default_prompt: "Use $genie-plan-design-review to run this Genie workflow stage and record a concise project summary."

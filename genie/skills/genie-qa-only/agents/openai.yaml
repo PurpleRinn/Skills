@@ -1,0 +1,4 @@
+interface:
+  display_name: "Genie QA Only"
+  short_description: "Run a focused Genie workflow stage with history tracking"
+  default_prompt: "Use $genie-qa-only to run this Genie workflow stage and record a concise project summary."

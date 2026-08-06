@@ -1,0 +1,4 @@
+interface:
+  display_name: "Genie Office Hours"
+  short_description: "Run a focused Genie workflow stage with history tracking"
+  default_prompt: "Use $genie-office-hours to run this Genie workflow stage and record a concise project summary."
