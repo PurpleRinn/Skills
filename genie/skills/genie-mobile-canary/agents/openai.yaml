@@ -1,0 +1,4 @@
+interface:
+  display_name: "Genie Mobile Canary"
+  short_description: "Monitor staged mobile releases and production health"
+  default_prompt: "Use $genie-mobile-canary to check this mobile release after rollout."

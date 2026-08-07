@@ -25,7 +25,7 @@ GENIE_ROOT = Path(__file__).resolve().parent.parent
 MANIFEST_PATH = GENIE_ROOT / "manifest.json"
 PROJECT_CONFIG_DIR = ".genie"
 PROJECT_CONFIG_NAME = "config.json"
-PROJECT_CONFIG_SCHEMA_VERSION = 1
+PROJECT_CONFIG_SCHEMA_VERSION = 2
 IGNORED_SCAN_DIRECTORIES = {
     ".dart_tool",
     ".git",
@@ -43,18 +43,34 @@ IGNORED_SCAN_DIRECTORIES = {
     "target",
     "vendor",
 }
-FRONTEND_PACKAGES = {
-    "@angular/core",
-    "@remix-run/react",
-    "@sveltejs/kit",
-    "astro",
-    "next",
-    "nuxt",
-    "react",
-    "react-dom",
-    "svelte",
-    "vite",
-    "vue",
+MOBILE_PACKAGES = {
+    "expo",
+    "react-native",
+}
+WEB_FRAMEWORK_PACKAGES = {
+    "@angular/core": "angular",
+    "@remix-run/react": "remix",
+    "@sveltejs/kit": "sveltekit",
+    "astro": "astro",
+    "next": "next",
+    "nuxt": "nuxt",
+    "react-dom": "react",
+    "svelte": "svelte",
+    "vue": "vue",
+}
+WEB_BUILD_PACKAGES = {"vite", "webpack", "parcel"}
+SSR_FRAMEWORKS = {"next", "nuxt", "remix", "sveltekit"}
+PWA_PACKAGES = {
+    "@vite-pwa/plugin",
+    "next-pwa",
+    "vite-plugin-pwa",
+    "workbox-build",
+    "workbox-window",
+}
+OTA_PACKAGES = {
+    "expo-updates",
+    "react-native-code-push",
+    "@revopush/react-native-code-push",
 }
 BACKEND_PACKAGES = {
     "@nestjs/core",
@@ -124,6 +140,42 @@ def project_config_path(project: Path) -> Path:
     return project / PROJECT_CONFIG_DIR / PROJECT_CONFIG_NAME
 
 
+def migrate_project_config(config: dict[str, Any]) -> dict[str, Any]:
+    source_schema = config.get("schema_version")
+    if source_schema == PROJECT_CONFIG_SCHEMA_VERSION:
+        return config
+    if source_schema != 1:
+        raise ValueError("Unsupported Genie project config schema")
+
+    migrated = dict(config)
+    migrated["schema_version"] = PROJECT_CONFIG_SCHEMA_VERSION
+    migrated["_source_schema_version"] = source_schema
+    paths = dict(migrated.get("paths") or {})
+    if "flutter" in paths and "mobile" not in paths:
+        paths["mobile"] = paths.pop("flutter")
+    migrated["paths"] = paths
+
+    tracks = ["mobile" if track == "flutter" else track for track in migrated.get("tracks", [])]
+    migrated["tracks"] = list(dict.fromkeys(tracks))
+    detected = dict(migrated.get("detected") or {})
+    surfaces = [
+        "mobile" if surface == "flutter" else surface
+        for surface in detected.get("surfaces", [])
+    ]
+    detected["surfaces"] = list(dict.fromkeys(surfaces))
+    migrated["detected"] = detected
+    technologies = set(detected.get("technologies") or [])
+    mobile_frameworks = []
+    if "flutter" in technologies:
+        mobile_frameworks.append("flutter")
+    if "react-native" in technologies:
+        mobile_frameworks.append("react-native")
+    migrated.setdefault("frameworks", {"mobile": mobile_frameworks} if mobile_frameworks else {})
+    migrated.setdefault("targets", [])
+    migrated.setdefault("capabilities", [])
+    return migrated
+
+
 def load_project_config(
     project: Path, manifest: dict[str, Any], required: bool = False
 ) -> dict[str, Any] | None:
@@ -139,8 +191,7 @@ def load_project_config(
         config = json.load(handle)
     if not isinstance(config, dict):
         raise ValueError("Genie project config must be a JSON object")
-    if config.get("schema_version") != PROJECT_CONFIG_SCHEMA_VERSION:
-        raise ValueError("Unsupported Genie project config schema")
+    config = migrate_project_config(config)
     known = {skill["id"] for skill in manifest["skills"]}
     enabled = config.get("enabled_skills")
     if not isinstance(enabled, list) or not all(isinstance(item, str) for item in enabled):
@@ -172,8 +223,15 @@ def read_json_object(path: Path) -> dict[str, Any]:
 def detect_project_structure(project: Path) -> dict[str, Any]:
     technologies: set[str] = set()
     surfaces: set[str] = set()
+    frameworks: dict[str, set[str]] = {
+        "mobile": set(),
+        "web": set(),
+        "backend": set(),
+    }
+    targets: set[str] = set()
+    capabilities: set[str] = set()
     groups: dict[str, set[str]] = {
-        "flutter": set(),
+        "mobile": set(),
         "web": set(),
         "web_admin": set(),
         "backend": set(),
@@ -185,6 +243,7 @@ def detect_project_structure(project: Path) -> dict[str, Any]:
         current_path = Path(current)
         relative = current_path.relative_to(project)
         depth = len(relative.parts)
+        child_directories = {name.lower() for name in directories}
         directories[:] = [
             name
             for name in directories
@@ -204,8 +263,13 @@ def detect_project_structure(project: Path) -> dict[str, Any]:
                 content = ""
             if "sdk: flutter" in content or re.search(r"(?m)^flutter\s*:", content):
                 technologies.update({"dart", "flutter"})
-                surfaces.add("flutter")
-                add_path_group(groups, "flutter", pattern)
+                surfaces.add("mobile")
+                frameworks["mobile"].add("flutter")
+                capabilities.update({"device-e2e", "native-platform", "store-release"})
+                add_path_group(groups, "mobile", pattern)
+                for target in ("android", "ios", "web"):
+                    if target in child_directories:
+                        targets.add(target)
                 evidence.append(pubspec.relative_to(project).as_posix())
 
         if "package.json" in file_names:
@@ -217,19 +281,72 @@ def detect_project_structure(project: Path) -> dict[str, Any]:
                 if isinstance(value, dict):
                     dependencies.update(str(name) for name in value)
             technologies.add("node")
-            if dependencies & FRONTEND_PACKAGES:
-                technologies.update(sorted(dependencies & FRONTEND_PACKAGES))
+            mobile_dependencies = dependencies & MOBILE_PACKAGES
+            is_react_native = bool(mobile_dependencies)
+            if is_react_native:
+                technologies.update(sorted(mobile_dependencies | (dependencies & {"react"})))
+                surfaces.add("mobile")
+                frameworks["mobile"].add(
+                    "expo" if "expo" in dependencies else "react-native"
+                )
+                capabilities.update({"device-e2e", "native-platform", "store-release"})
+                add_path_group(groups, "mobile", pattern)
+                for target in ("android", "ios"):
+                    if target in child_directories:
+                        targets.add(target)
+                if "react-native-web" in dependencies or "expo" in dependencies:
+                    targets.add("web")
+                if dependencies & OTA_PACKAGES:
+                    capabilities.add("ota")
+                evidence.append(package_path.relative_to(project).as_posix())
+
+            web_frameworks = {
+                framework
+                for package_name, framework in WEB_FRAMEWORK_PACKAGES.items()
+                if package_name in dependencies
+            }
+            is_react_native_web_only = (
+                is_react_native
+                and web_frameworks <= {"react"}
+                and ("react-native-web" in dependencies or "expo" in dependencies)
+            )
+            if web_frameworks and not is_react_native_web_only:
+                technologies.update(sorted(web_frameworks | (dependencies & WEB_BUILD_PACKAGES)))
+                frameworks["web"].update(web_frameworks)
                 if lower_parts & {"admin", "backoffice", "console", "dashboard"}:
                     surfaces.add("web-admin")
                     add_path_group(groups, "web_admin", pattern)
+                    capabilities.add("role-based-access")
                 else:
                     surfaces.add("web")
                     add_path_group(groups, "web", pattern)
+                targets.add("web")
+                capabilities.add("browser-runtime")
+                if web_frameworks & SSR_FRAMEWORKS:
+                    capabilities.add("ssr")
                 evidence.append(package_path.relative_to(project).as_posix())
+            elif dependencies & WEB_BUILD_PACKAGES and not is_react_native:
+                technologies.update(sorted(dependencies & WEB_BUILD_PACKAGES))
+                frameworks["web"].update(sorted(dependencies & WEB_BUILD_PACKAGES))
+                if lower_parts & {"admin", "backoffice", "console", "dashboard"}:
+                    surfaces.add("web-admin")
+                    add_path_group(groups, "web_admin", pattern)
+                    capabilities.add("role-based-access")
+                else:
+                    surfaces.add("web")
+                    add_path_group(groups, "web", pattern)
+                targets.add("web")
+                capabilities.add("browser-runtime")
+                evidence.append(package_path.relative_to(project).as_posix())
+
+            if dependencies & PWA_PACKAGES:
+                capabilities.update({"offline", "pwa", "service-worker"})
             if dependencies & BACKEND_PACKAGES:
                 technologies.update(sorted(dependencies & BACKEND_PACKAGES))
+                frameworks["backend"].update(sorted(dependencies & BACKEND_PACKAGES))
                 surfaces.add("backend")
                 add_path_group(groups, "backend", pattern)
+                capabilities.add("api")
                 evidence.append(package_path.relative_to(project).as_posix())
 
         if file_names & {
@@ -239,13 +356,40 @@ def detect_project_structure(project: Path) -> dict[str, Any]:
             "vite.config.js",
             "vite.config.ts",
         }:
-            surfaces.add("web")
-            add_path_group(groups, "web", pattern)
+            if lower_parts & {"admin", "backoffice", "console", "dashboard"}:
+                surfaces.add("web-admin")
+                add_path_group(groups, "web_admin", pattern)
+                capabilities.add("role-based-access")
+            else:
+                surfaces.add("web")
+                add_path_group(groups, "web", pattern)
+            targets.add("web")
+            capabilities.add("browser-runtime")
+            if file_names & {"next.config.js", "next.config.mjs", "next.config.ts"}:
+                frameworks["web"].add("next")
+                capabilities.add("ssr")
+            elif file_names & {"vite.config.js", "vite.config.ts"}:
+                frameworks["web"].add("vite")
+
+        if "index.html" in file_names:
+            if lower_parts & {"admin", "backoffice", "console", "dashboard"}:
+                surfaces.add("web-admin")
+                add_path_group(groups, "web_admin", pattern)
+                capabilities.add("role-based-access")
+            else:
+                surfaces.add("web")
+                add_path_group(groups, "web", pattern)
+            targets.add("web")
+            capabilities.add("browser-runtime")
+
+        if file_names & {"manifest.webmanifest", "service-worker.js", "sw.js"}:
+            capabilities.update({"offline", "pwa", "service-worker"})
 
         if file_names & {"firebase.json", "serverless.yml", "serverless.yaml"}:
             technologies.add("deployment-config")
             surfaces.add("backend")
             add_path_group(groups, "backend", pattern)
+            capabilities.add("api")
 
         if lower_parts & {"api", "backend", "functions", "server"}:
             if file_names & {
@@ -257,6 +401,7 @@ def detect_project_structure(project: Path) -> dict[str, Any]:
             }:
                 surfaces.add("backend")
                 add_path_group(groups, "backend", pattern)
+                capabilities.add("api")
 
         if lower_parts & {"common", "packages", "shared"}:
             add_path_group(groups, "shared", pattern)
@@ -264,39 +409,63 @@ def detect_project_structure(project: Path) -> dict[str, Any]:
     if not surfaces:
         surfaces.add("library")
 
+    if "mobile" in surfaces and not targets.intersection({"android", "ios"}):
+        targets.update({"android", "ios"})
+
     tracks = ["core"]
-    if surfaces & {"flutter", "web", "web-admin"}:
+    if surfaces & {"mobile", "web", "web-admin"}:
         tracks.append("ui")
-    if "flutter" in surfaces:
-        tracks.append("flutter")
+    if "mobile" in surfaces:
+        tracks.append("mobile")
     if surfaces & {"web", "web-admin"}:
         tracks.append("web")
     if "backend" in surfaces:
         tracks.append("backend")
-    if surfaces & {"flutter", "web", "web-admin", "backend"}:
+    application_surface_count = sum(
+        1
+        for present in (
+            "mobile" in surfaces,
+            bool(surfaces & {"web", "web-admin"}),
+            "backend" in surfaces,
+        )
+        if present
+    )
+    if application_surface_count >= 2:
+        tracks.append("cross-surface")
+        capabilities.add("cross-surface")
+    if surfaces & {"mobile", "web", "web-admin", "backend"}:
         tracks.append("deploy")
 
-    if "flutter" in surfaces and surfaces & {"web", "web-admin"}:
-        profile = "flutter-web"
-    elif "flutter" in surfaces and "backend" in surfaces:
-        profile = "flutter-backend"
-    elif "flutter" in surfaces:
-        profile = "flutter"
-    elif surfaces & {"web", "web-admin"} and "backend" in surfaces:
-        profile = "web-backend"
-    elif surfaces & {"web", "web-admin"}:
-        profile = "web"
-    elif "backend" in surfaces:
-        profile = "backend"
-    else:
-        profile = "library"
+    profile_parts = []
+    if "mobile" in surfaces:
+        mobile_frameworks = frameworks["mobile"]
+        profile_parts.append(
+            "flutter"
+            if "flutter" in mobile_frameworks
+            else "expo"
+            if "expo" in mobile_frameworks
+            else "react-native"
+            if "react-native" in mobile_frameworks
+            else "mobile"
+        )
+    if surfaces & {"web", "web-admin"}:
+        profile_parts.append("web")
+    if "backend" in surfaces:
+        profile_parts.append("backend")
+    profile = "-".join(profile_parts) if profile_parts else "library"
 
     normalized_groups = {
         key: sorted(values) for key, values in groups.items() if values
     }
+    normalized_frameworks = {
+        key: sorted(values) for key, values in frameworks.items() if values
+    }
     fingerprint_source = {
         "technologies": sorted(technologies),
         "surfaces": sorted(surfaces),
+        "frameworks": normalized_frameworks,
+        "targets": sorted(targets),
+        "capabilities": sorted(capabilities),
         "tracks": tracks,
         "paths": normalized_groups,
         "evidence": sorted(set(evidence)),
@@ -332,15 +501,18 @@ def skill_path_patterns(skill: dict[str, Any], detected: dict[str, Any]) -> list
     if "web" in tracks:
         for group in ("web", "web_admin", "backend", "shared"):
             patterns.update(groups.get(group, []))
-    if "flutter" in tracks:
-        for group in ("flutter", "backend", "shared"):
+    if "mobile" in tracks:
+        for group in ("mobile", "backend", "shared"):
             patterns.update(groups.get(group, []))
     if "backend" in tracks:
         for group in ("backend", "shared"):
             patterns.update(groups.get(group, []))
     if "ui" in tracks:
-        for group in ("flutter", "web", "web_admin", "shared"):
+        for group in ("mobile", "web", "web_admin", "shared"):
             patterns.update(groups.get(group, []))
+    if "cross-surface" in tracks:
+        for values in groups.values():
+            patterns.update(values)
     if "deploy" in tracks:
         for values in groups.values():
             patterns.update(values)
@@ -415,6 +587,9 @@ def proposed_project_config(
             "surfaces": detected["surfaces"],
             "evidence": detected["evidence"],
         },
+        "frameworks": detected["frameworks"],
+        "targets": detected["targets"],
+        "capabilities": detected["capabilities"],
         "tracks": detected["tracks"],
         "paths": detected["paths"],
         "enabled_skills": enabled_skills,
@@ -435,11 +610,31 @@ def config_changes(
     proposed_skills = set(proposed.get("enabled_skills", []))
     current_surfaces = set((current or {}).get("detected", {}).get("surfaces", []))
     proposed_surfaces = set(proposed.get("detected", {}).get("surfaces", []))
+    current_frameworks = {
+        f"{surface}:{framework}"
+        for surface, values in ((current or {}).get("frameworks") or {}).items()
+        for framework in values
+    }
+    proposed_frameworks = {
+        f"{surface}:{framework}"
+        for surface, values in (proposed.get("frameworks") or {}).items()
+        for framework in values
+    }
+    current_targets = set((current or {}).get("targets") or [])
+    proposed_targets = set(proposed.get("targets") or [])
+    current_capabilities = set((current or {}).get("capabilities") or [])
+    proposed_capabilities = set(proposed.get("capabilities") or [])
     return {
         "skills_added": sorted(proposed_skills - current_skills),
         "skills_removed": sorted(current_skills - proposed_skills),
         "surfaces_added": sorted(proposed_surfaces - current_surfaces),
         "surfaces_removed": sorted(current_surfaces - proposed_surfaces),
+        "frameworks_added": sorted(proposed_frameworks - current_frameworks),
+        "frameworks_removed": sorted(current_frameworks - proposed_frameworks),
+        "targets_added": sorted(proposed_targets - current_targets),
+        "targets_removed": sorted(current_targets - proposed_targets),
+        "capabilities_added": sorted(proposed_capabilities - current_capabilities),
+        "capabilities_removed": sorted(current_capabilities - proposed_capabilities),
     }
 
 
@@ -577,6 +772,13 @@ def print_config_report(
     print(f"감지 영역: {', '.join(proposed['detected']['surfaces'])}")
     technologies = proposed["detected"].get("technologies") or ["명확한 프레임워크 없음"]
     print(f"감지 기술: {', '.join(technologies)}")
+    framework_values = [
+        f"{surface}={','.join(values)}"
+        for surface, values in proposed.get("frameworks", {}).items()
+    ]
+    print(f"프레임워크: {', '.join(framework_values) if framework_values else '-'}")
+    print(f"대상 플랫폼: {', '.join(proposed.get('targets') or ['-'])}")
+    print(f"기능 특성: {', '.join(proposed.get('capabilities') or ['-'])}")
     print(f"활성 트랙: {', '.join(proposed['tracks'])}")
     print(f"활성 스킬: {len(proposed['enabled_skills'])}개")
     for skill_id in proposed["enabled_skills"]:
@@ -589,6 +791,12 @@ def print_config_report(
         labels = {
             "surfaces_added": "추가 영역",
             "surfaces_removed": "제거 영역",
+            "frameworks_added": "추가 프레임워크",
+            "frameworks_removed": "제거 프레임워크",
+            "targets_added": "추가 대상",
+            "targets_removed": "제거 대상",
+            "capabilities_added": "추가 기능 특성",
+            "capabilities_removed": "제거 기능 특성",
             "skills_added": "추가 스킬",
             "skills_removed": "제거 스킬",
         }
@@ -612,26 +820,49 @@ def command_configure(args: argparse.Namespace) -> int:
     )
     reject_sensitive_config(proposed)
     changes = config_changes(current, proposed)
-    if args.format == "json":
-        print(
-            json.dumps(
-                {"project": str(project), "changes": changes, "config": proposed},
-                ensure_ascii=False,
-                indent=2,
-            )
-        )
-    else:
+    if args.format != "json":
         print_config_report(project, current, proposed, changes)
     if not args.apply:
-        print("\n검사만 수행했습니다. 확인 후 --apply를 사용하면 설정을 저장합니다.")
+        if args.format == "json":
+            print(
+                json.dumps(
+                    {
+                        "project": str(project),
+                        "applied": False,
+                        "changes": changes,
+                        "config": proposed,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+        else:
+            print("\n검사만 수행했습니다. 확인 후 --apply를 사용하면 설정을 저장합니다.")
         return 0
 
     destination = project_config_path(project)
     atomic_write(destination, json.dumps(proposed, ensure_ascii=False, indent=2) + "\n")
     root, created = ensure_history(project, manifest)
-    print_created_notice(created)
-    print(f"GENIE_CONFIG={destination}")
-    print(f"GENIE_HISTORY={root}")
+    if args.format == "json":
+        print(
+            json.dumps(
+                {
+                    "project": str(project),
+                    "applied": True,
+                    "changes": changes,
+                    "config": proposed,
+                    "config_path": str(destination),
+                    "history_root": str(root),
+                    "history_created": created,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+    else:
+        print_created_notice(created)
+        print(f"GENIE_CONFIG={destination}")
+        print(f"GENIE_HISTORY={root}")
     return 0
 
 
@@ -887,7 +1118,8 @@ def command_status(args: argparse.Namespace) -> int:
     proposed = proposed_project_config(project, manifest, existing=config)
     changes = config_changes(config, proposed)
     config_drift = (
-        config.get("structure_fingerprint") != proposed.get("structure_fingerprint")
+        config.get("_source_schema_version") is not None
+        or config.get("structure_fingerprint") != proposed.get("structure_fingerprint")
         or config.get("catalog_version") != manifest.get("catalog_version", 1)
         or any(changes.values())
     )
@@ -1012,8 +1244,9 @@ def command_doctor(_: argparse.Namespace) -> int:
         print(f"ERROR: {exc}")
         return 1
     ids = [skill.get("id") for skill in manifest.get("skills", [])]
-    if len(ids) != 15:
-        errors.append(f"Expected 15 worker skills, found {len(ids)}")
+    expected_workers = int(manifest.get("worker_count", len(ids)))
+    if len(ids) != expected_workers:
+        errors.append(f"Expected {expected_workers} worker skills, found {len(ids)}")
     if len(ids) != len(set(ids)):
         errors.append("Duplicate worker skill ids")
     if not (GENIE_ROOT / "SKILL.md").exists():
@@ -1028,7 +1261,7 @@ def command_doctor(_: argparse.Namespace) -> int:
         for error in errors:
             print(f"ERROR: {error}")
         return 1
-    print("Genie doctor: OK (1 orchestrator, 15 workers)")
+    print(f"Genie doctor: OK (1 orchestrator, {len(ids)} workers)")
     return 0
 
 

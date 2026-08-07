@@ -1,6 +1,7 @@
 {
   "schema_version": 1,
-  "catalog_version": 2,
+  "catalog_version": 3,
+  "worker_count": 21,
   "history_root": "docs/genie",
   "skills": [
     {
@@ -69,6 +70,19 @@
       "invalidated_by": ["src/**", "app/**", "components/**", "styles/**", "public/**"]
     },
     {
+      "id": "genie-mobile-design-review",
+      "history_dir": "mobile-design-review",
+      "stage": "모바일 디자인 검토",
+      "order": 55,
+      "tracks": ["mobile"],
+      "description": "빌드된 모바일 앱의 플랫폼 관습, 화면 상태, 터치, 키보드와 접근성을 실제 기기 관점에서 검토한다.",
+      "cadence": "모바일 UI 구현 후 또는 주요 릴리스 전",
+      "required_by_default": false,
+      "freshness": "paths",
+      "depends_on": ["genie-plan-design-review"],
+      "invalidated_by": ["lib/**", "src/**", "app/**", "android/**", "ios/**", "assets/**"]
+    },
+    {
       "id": "genie-investigate",
       "history_dir": "investigate",
       "stage": "원인 조사",
@@ -102,6 +116,32 @@
       "tracks": ["web"],
       "description": "실제 사용자 관점에서 브라우저 테스트를 수행하고 수정 없이 보고한다.",
       "cadence": "수정 전 기준선 또는 배포 전",
+      "required_by_default": true,
+      "freshness": "commit",
+      "depends_on": ["genie-review"],
+      "invalidated_by": ["**"]
+    },
+    {
+      "id": "genie-mobile-qa-only",
+      "history_dir": "mobile-qa-only",
+      "stage": "모바일 보고형 QA",
+      "order": 82,
+      "tracks": ["mobile"],
+      "description": "Flutter 또는 React Native 앱을 기기·에뮬레이터에서 테스트하고 수정 없이 증거와 결과를 보고한다.",
+      "cadence": "모바일 변경 완료 후 또는 스토어 출시 전",
+      "required_by_default": true,
+      "freshness": "commit",
+      "depends_on": ["genie-review"],
+      "invalidated_by": ["**"]
+    },
+    {
+      "id": "genie-cross-surface-qa",
+      "history_dir": "cross-surface-qa",
+      "stage": "교차 영역 QA",
+      "order": 85,
+      "tracks": ["cross-surface"],
+      "description": "모바일, 웹 어드민과 백엔드 사이의 데이터·권한·상태 전파를 하나의 사용자 흐름으로 검증한다.",
+      "cadence": "둘 이상의 제품 영역에 영향을 주는 변경 후",
       "required_by_default": true,
       "freshness": "commit",
       "depends_on": ["genie-review"],
@@ -147,6 +187,19 @@
       "invalidated_by": ["**"]
     },
     {
+      "id": "genie-mobile-qa",
+      "history_dir": "mobile-qa",
+      "stage": "모바일 수정형 QA",
+      "order": 112,
+      "tracks": ["mobile"],
+      "description": "모바일 결함을 재현하고 승인된 범위에서 수정한 뒤 재빌드, 회귀 테스트와 기기 재검증을 수행한다.",
+      "cadence": "모바일 QA 보고 검토 후",
+      "required_by_default": false,
+      "freshness": "commit",
+      "depends_on": ["genie-review", "genie-mobile-qa-only"],
+      "invalidated_by": ["**"]
+    },
+    {
       "id": "genie-ship",
       "history_dir": "ship",
       "stage": "출하",
@@ -173,6 +226,19 @@
       "invalidated_by": ["**"]
     },
     {
+      "id": "genie-mobile-release",
+      "history_dir": "mobile-release",
+      "stage": "모바일 출시",
+      "order": 132,
+      "tracks": ["mobile"],
+      "description": "Android와 iOS의 서명, 버전, 릴리스 빌드, 테스트 트랙, 스토어 제출과 단계적 출시를 추적한다.",
+      "cadence": "모바일 배포 후보 확정 후",
+      "required_by_default": false,
+      "freshness": "commit",
+      "depends_on": ["genie-ship", "genie-mobile-qa-only"],
+      "invalidated_by": ["**"]
+    },
+    {
       "id": "genie-canary",
       "history_dir": "canary",
       "stage": "배포 감시",
@@ -183,6 +249,19 @@
       "required_by_default": false,
       "freshness": "commit",
       "depends_on": ["genie-project-deploy"],
+      "invalidated_by": ["**"]
+    },
+    {
+      "id": "genie-mobile-canary",
+      "history_dir": "mobile-canary",
+      "stage": "모바일 출시 감시",
+      "order": 142,
+      "tracks": ["mobile"],
+      "description": "테스트·단계적 출시 후 크래시, ANR, 앱 시작, API 오류와 핵심 사용자 흐름의 건강 상태를 확인한다.",
+      "cadence": "모바일 테스트 트랙 또는 운영 출시 직후",
+      "required_by_default": false,
+      "freshness": "commit",
+      "depends_on": ["genie-mobile-release"],
       "invalidated_by": ["**"]
     },
     {

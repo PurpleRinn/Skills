@@ -1,0 +1,4 @@
+interface:
+  display_name: "Genie Mobile QA"
+  short_description: "Find, fix, and reverify mobile application defects"
+  default_prompt: "Use $genie-mobile-qa to test, fix, and reverify this mobile app."

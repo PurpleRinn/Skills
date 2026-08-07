@@ -1,0 +1,4 @@
+interface:
+  display_name: "Genie Cross Surface QA"
+  short_description: "Verify workflows across mobile, web, and backend"
+  default_prompt: "Use $genie-cross-surface-qa to verify this workflow across product surfaces."

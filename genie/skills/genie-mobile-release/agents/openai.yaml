@@ -1,0 +1,4 @@
+interface:
+  display_name: "Genie Mobile Release"
+  short_description: "Prepare and track Android and iOS application releases"
+  default_prompt: "Use $genie-mobile-release to prepare this mobile app release safely."

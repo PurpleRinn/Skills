@@ -6,15 +6,19 @@
 
 1. 저장소 루트와 프로젝트 지침을 확인한다.
 2. `configure`를 `--apply` 없이 실행해 구조 감지 결과와 변경 제안을 읽는다.
-3. 감지 근거에서 Flutter, 웹, 웹 어드민, 백엔드와 공용 패키지 경로가 실제 구조와 일치하는지 확인한다.
-4. 명확하면 `--apply`로 저장한다. 모노레포 구조가 모호하거나 기존 활성 스킬이 제거되면 사용자에게 확인한다.
-5. 설정 후 `status`를 실행해 활성 스킬만 표시되는지 확인한다.
+3. 감지 근거에서 모바일, 웹, 웹 어드민, 백엔드와 공용 패키지 경로가 실제 구조와 일치하는지 확인한다.
+4. 모바일·웹의 프레임워크, 대상 플랫폼과 `ssr`, `pwa`, `ota` 같은 기능 특성이 맞는지 확인한다.
+5. 명확하면 `--apply`로 저장한다. 모노레포 구조가 모호하거나 기존 활성 스킬이 제거되면 사용자에게 확인한다.
+6. 설정 후 `status`를 실행해 활성 스킬만 표시되는지 확인한다.
 
 ## 설정 파일 역할
 
 - `profile`: 감지된 대표 프로젝트 유형
-- `tracks`: `core`, `ui`, `flutter`, `web`, `backend`, `deploy` 중 적용할 기능군
-- `paths`: Flutter, 웹, 웹 어드민, 백엔드와 공용 코드 경로
+- `tracks`: `core`, `ui`, `mobile`, `web`, `backend`, `cross-surface`, `deploy` 중 적용할 기능군
+- `paths`: 모바일, 웹, 웹 어드민, 백엔드와 공용 코드 경로
+- `frameworks`: 영역별 Flutter, React Native, Expo, Next, Vue, SvelteKit 같은 실행 어댑터
+- `targets`: Android, iOS, web처럼 빌드·검증할 플랫폼
+- `capabilities`: `ssr`, `pwa`, `offline`, `ota`, `role-based-access`, `cross-surface` 같은 조건부 검증 항목
 - `enabled_skills`: 이 프로젝트에서 Genie가 자동 선택할 수 있는 스킬
 - `required_skills`: 다음 단계 추천에 기본적으로 사용하는 스킬
 - `conditional_skills`: 기능 범위나 배포 상황에 따라 실행하는 스킬
@@ -30,6 +34,7 @@
 설정을 다시 호출하면 현재 저장소를 재검사하고 다음을 비교한다.
 
 - 새로 발견되거나 사라진 프로젝트 영역
+- 추가되거나 변경된 프레임워크, 대상 플랫폼과 기능 특성
 - 새로 추가하거나 제거할 스킬
 - 카탈로그 버전 변경
 - 기존 수동 활성·비활성 선택
@@ -40,5 +45,7 @@
 python GENIE_ROOT/scripts/genie.py configure --project PROJECT_ROOT --enable SKILL --apply
 python GENIE_ROOT/scripts/genie.py configure --project PROJECT_ROOT --disable SKILL --apply
 ```
+
+설정 스키마 1의 `flutter` 경로·트랙은 읽을 때 스키마 2의 `mobile`로 이관한다. 다음 `configure --apply`에서 새 형식으로 저장한다. React Native·Expo 프로젝트는 `react` 의존성이 있어도 먼저 모바일로 판정하며, 별도의 브라우저 앱 근거가 있을 때만 웹 트랙을 추가한다.
 
 설정이 없을 때 `status`, `init` 또는 전문 스킬 기록을 계속 진행하지 않는다. `설정부터 진행하겠습니다`라고 알린 뒤 검사와 설정으로 전환한다.

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Genie Mobile QA Only"
+  short_description: "Report-only QA for Flutter and React Native apps"
+  default_prompt: "Use $genie-mobile-qa-only to test this mobile app without changing code."

@@ -1,6 +1,6 @@
 ---
 name: genie
-description: Genie 개발 비서 오케스트레이터. 사용자가 "지니 설정", "지니 프로젝트 설정", "지니, 개발진행 단계 보여줘", "지니, 다음 단계", "마지막 QA", "배포 준비 상태", "오래된 검증", "중요 결정 복기", "다음 단계 실행"처럼 지니를 부르거나 프로젝트의 개발 생명주기·스킬 구성·실행 이력·다음 작업을 묻는 경우 사용한다. 프로젝트 구조를 검사해 .genie/config.json의 활성 스킬을 구성하고 docs/genie 요약 기록을 바탕으로 현재 상태와 stale 여부를 판정한다.
+description: Genie 개발 비서 오케스트레이터. 사용자가 "지니 설정", "지니 프로젝트 설정", "지니, 개발진행 단계 보여줘", "지니, 다음 단계", "마지막 QA", "배포 준비 상태", "오래된 검증", "중요 결정 복기", "다음 단계 실행"처럼 지니를 부르거나 프로젝트의 개발 생명주기·스킬 구성·실행 이력·다음 작업을 묻는 경우 사용한다. 모바일·웹·백엔드 구조와 프레임워크를 검사해 .genie/config.json의 활성 스킬을 구성하고 docs/genie 요약 기록을 바탕으로 현재 상태와 stale 여부를 판정한다.
 ---
 
 # Genie 개발 비서
@@ -39,7 +39,7 @@ python GENIE_ROOT/scripts/genie.py init --project PROJECT_ROOT
 python GENIE_ROOT/scripts/genie.py configure --project PROJECT_ROOT
 ```
 
-감지 근거, 프로필, 활성 트랙, 필수·조건부 스킬과 기존 설정 대비 추가·제거 항목을 설명하라. 사용자가 설정을 명시적으로 요청했고 감지가 명확하면 적용하라. 구조가 모호하거나 제거되는 스킬이 중요한 이력을 가진 경우 먼저 확인하라.
+감지 근거, 제품 영역, 프레임워크, 대상 플랫폼, 기능 특성, 활성 트랙, 필수·조건부 스킬과 기존 설정 대비 추가·제거 항목을 설명하라. `mobile`은 공통 개발 트랙이고 Flutter·React Native·Expo는 실행 어댑터라는 점을 구분하라. 사용자가 설정을 명시적으로 요청했고 감지가 명확하면 적용하라. 구조가 모호하거나 제거되는 스킬이 중요한 이력을 가진 경우 먼저 확인하라.
 
 ```text
 python GENIE_ROOT/scripts/genie.py configure --project PROJECT_ROOT --apply
@@ -75,9 +75,12 @@ python GENIE_ROOT/scripts/genie.py history --project PROJECT_ROOT --skill spec
 - 신규 프로젝트: 발견 → 명세 → 제품·기술·디자인 검토
 - 일반 기능: 명세 → 필요한 계획 검토 → 구현 → review → QA
 - 버그: investigate → 수정 → review → 회귀 QA
+- 모바일 기능: 모바일 어댑터 확인 → mobile-design-review(필요 시) → mobile-qa-only → mobile-qa(수정 요청 시)
+- 모바일·웹·백엔드 연동: 영역별 검증 → cross-surface-qa
 - 보안 민감 변경: plan-eng-review와 cso를 포함
 - 배포 후보: review와 QA 결과를 확인한 뒤 ship
-- 배포 환경 확정 후: project-deploy → canary → 필요 시 benchmark → document-release
+- 웹 배포 환경 확정 후: project-deploy → canary → 필요 시 benchmark → document-release
+- 모바일 출시: mobile-qa-only → ship → mobile-release → mobile-canary → document-release
 
 조건부 스킬을 무조건 미완료로 표시하지 마라. UI가 없으면 디자인 검토, 배포가 없으면 canary, 보안 영향이 없으면 cso를 `조건부`로 설명하라.
 
@@ -87,9 +90,10 @@ python GENIE_ROOT/scripts/genie.py history --project PROJECT_ROOT --skill spec
 
 1. `.genie/config.json`의 활성 스킬 중에서 가장 적합한 전문 스킬 하나를 선택하라.
 2. `GENIE_ROOT/skills/<skill-id>/SKILL.md`를 완전히 읽어라.
-3. 전문 스킬의 범위와 권한 규칙을 따라 작업하라.
-4. 쓰기·커밋·push·배포처럼 외부 상태를 바꾸는 작업은 사용자의 요청 범위를 넘지 마라.
-5. 완료 후 `GENIE_ROOT/references/worker-contract.md`에 따라 요약 기록을 한 번만 남겨라.
+3. 모바일이면 `frameworks.mobile`에 따라 `flutter-mobile.md` 또는 `react-native-mobile.md`를, 웹이면 `web-frameworks.md`를 읽어 실행 방식을 보완하라.
+4. 전문 스킬의 범위와 권한 규칙을 따라 작업하라.
+5. 쓰기·커밋·push·배포처럼 외부 상태를 바꾸는 작업은 사용자의 요청 범위를 넘지 마라.
+6. 완료 후 `GENIE_ROOT/references/worker-contract.md`에 따라 요약 기록을 한 번만 남겨라.
 
 상태 조회만 요청받았을 때 전문 스킬을 자동 실행하거나 코드를 수정하지 마라.
 

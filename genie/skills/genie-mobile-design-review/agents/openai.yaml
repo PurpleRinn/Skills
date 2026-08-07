@@ -1,0 +1,4 @@
+interface:
+  display_name: "Genie Mobile Design Review"
+  short_description: "Review built mobile UI, accessibility, and platform fit"
+  default_prompt: "Use $genie-mobile-design-review to audit this mobile app interface."

@@ -66,7 +66,9 @@ Genie 실행 기록 폴더 docs/genie가 없습니다. 이번 실행부터 결�
 
 ## 프로젝트 설정
 
-Genie 스킬 전체는 Codex 전역에 한 번 설치하지만 프로젝트마다 실제 사용할 스킬은 `.genie/config.json`으로 제한합니다. 설정 시 `pubspec.yaml`, `package.json`, 프레임워크 의존성, 앱·어드민·서버·공용 패키지 경로를 확인해 `core`, `ui`, `flutter`, `web`, `backend`, `deploy` 트랙을 조합합니다.
+Genie 스킬 전체는 Codex 전역에 한 번 설치하지만 프로젝트마다 실제 사용할 스킬은 `.genie/config.json`으로 제한합니다. 설정 시 `pubspec.yaml`, `package.json`, 프레임워크 의존성, 앱·어드민·서버·공용 패키지 경로를 확인해 `core`, `ui`, `mobile`, `web`, `backend`, `cross-surface`, `deploy` 트랙을 조합합니다.
+
+트랙과 프레임워크는 분리합니다. `mobile`은 공통 개발 단계이고 Flutter·React Native·Expo는 그 단계를 실제로 수행하는 방법을 정하는 어댑터입니다. 웹도 React만 전제로 하지 않고 Next, Remix, Vue·Nuxt, Svelte·SvelteKit, Angular, Astro와 정적 사이트를 구분합니다. 따라서 프레임워크를 바꿔도 개발 이력의 큰 흐름은 유지하면서 빌드·테스트·QA 방식만 해당 어댑터로 바뀝니다.
 
 ```text
 지니 설정
@@ -78,13 +80,34 @@ Genie 스킬 전체는 Codex 전역에 한 번 설치하지만 프로젝트마�
 설정 파일에는 다음 정보가 들어갑니다.
 
 - 감지된 프로젝트 프로필과 기술
-- Flutter, 웹, 웹 어드민, 백엔드와 공용 코드 경로
+- 모바일, 웹, 웹 어드민, 백엔드와 공용 코드 경로
+- 영역별 프레임워크와 Android·iOS·web 대상 플랫폼
+- SSR, PWA·오프라인, OTA, 권한, 교차 영역 연동 같은 기능 특성
 - 활성화된 필수·조건부 스킬 목록
 - 스킬별 stale 판정 대상 경로
 - 자동 감지에 대한 수동 활성·비활성 선택
 - 마지막 구조 검사와 Genie 카탈로그 버전
 
 설정이 이미 있어도 설정 호출 시 현재 구조를 다시 읽습니다. 새 앱·어드민·백엔드가 추가되거나 Genie 카탈로그에 새 스킬이 생기면 추가할 트랙과 스킬을 보여줍니다. 기존 수동 선택은 유지합니다.
+
+React Native·Expo는 `react`를 사용하더라도 먼저 모바일로 감지합니다. `react-native-web`이나 Expo의 web target만 있는 경우 웹 QA 스킬을 중복 활성화하지 않으며, 별도 관리자·브라우저 앱이 확인될 때 웹 트랙을 추가합니다. 스키마 1에서 사용하던 `flutter` 트랙과 경로는 설정 재적용 시 스키마 2의 `mobile`로 자동 이관됩니다.
+
+대표적인 설정 형태는 다음과 같습니다.
+
+```json
+{
+  "schema_version": 2,
+  "profile": "flutter-web-backend",
+  "frameworks": {
+    "mobile": ["flutter"],
+    "web": ["vue"],
+    "backend": ["firebase-functions"]
+  },
+  "targets": ["android", "ios", "web"],
+  "capabilities": ["api", "cross-surface", "role-based-access"],
+  "tracks": ["core", "ui", "mobile", "web", "backend", "cross-surface", "deploy"]
+}
+```
 
 역할은 다음처럼 분리됩니다.
 
@@ -105,16 +128,31 @@ docs/genie/              스킬 실행 결과와 대화 요약 이력
 | 제품 검토 | `genie-plan-ceo-review` | 확장·선택적 확장·범위 유지·축소 중 적절한 모드로 제품 가치와 범위를 재검토합니다. | 큰 기능의 spec 이후 |
 | 기술 설계 | `genie-plan-eng-review` | 데이터 흐름, 상태, 오류, 보안, 성능, 마이그레이션과 테스트 계획을 고정합니다. | 구조·DB·외부 연동 변경 전 |
 | 디자인 설계 | `genie-plan-design-review` | 사용자 흐름, 계층, 상태, 반응형, 접근성과 디자인 일관성을 검토합니다. | UI 작업 전 |
+| 모바일 디자인 검토 | `genie-mobile-design-review` | 빌드된 앱의 플랫폼 관습, 터치, 키보드, 안전 영역과 접근성을 기기 관점에서 검토합니다. | 모바일 UI 구현 후 또는 주요 출시 전 |
 | 원인 조사 | `genie-investigate` | 증거와 가설을 통해 근본 원인을 찾고 검증된 경우에만 수정합니다. | 버그·장애 발생 시 |
 | 코드 검토 | `genie-review` | diff를 기준으로 운영 버그, 범위 누락, 테스트와 문서 누락을 찾습니다. | 변경 완료 후 |
 | 보고형 QA | `genie-qa-only` | 실제 사용자 관점의 브라우저 테스트를 수행하고 수정 없이 보고합니다. | 수정 전 기준선 또는 배포 전 |
+| 모바일 보고형 QA | `genie-mobile-qa-only` | Flutter·React Native 앱을 기기나 에뮬레이터에서 테스트하고 수정 없이 보고합니다. | 모바일 변경 완료 후 또는 출시 전 |
+| 교차 영역 QA | `genie-cross-surface-qa` | 모바일·웹 어드민·백엔드 사이 데이터, 권한과 상태 전파를 종단 간 검증합니다. | 둘 이상의 제품 영역에 영향이 있는 변경 후 |
 | 보안 | `genie-cso` | OWASP·STRIDE·Secret·공급망·권한 경계를 읽기 전용으로 감사합니다. | 보안 민감 변경 또는 정기 점검 |
 | 문서 동기화 | `genie-document-release` | 실제 변경과 README, 운영·스키마 문서의 불일치를 찾아 갱신합니다. | 기능 완료 또는 배포 후 |
 | 수정형 QA | `genie-qa` | 브라우저에서 버그를 찾고 승인된 범위에서 수정·회귀 테스트·재검증합니다. | QA 보고 검토 후 |
+| 모바일 수정형 QA | `genie-mobile-qa` | 모바일 결함을 수정한 뒤 재빌드, 회귀 테스트와 기기 재검증을 수행합니다. | 모바일 QA 보고 검토 후 |
 | 성능 | `genie-benchmark` | 페이지 속도와 주요 성능 지표의 기준선을 만들고 전후를 비교합니다. | 배포 환경 확정 후, 주요 릴리스 전후 |
 | 배포 감시 | `genie-canary` | 배포 후 핵심 URL, 콘솔 오류와 사용자 흐름을 확인하고 이상을 보고합니다. | 배포 직후 |
+| 모바일 출시 감시 | `genie-mobile-canary` | 출시 후 크래시, ANR, 앱 시작, API 오류와 핵심 흐름을 확인합니다. | 테스트 트랙 또는 단계적 출시 직후 |
 | 출하 | `genie-ship` | 테스트·검토·변경 정리·커밋·push·PR 흐름을 프로젝트 규칙에 맞게 수행합니다. | 배포 후보 확정 시 |
 | 프로젝트 배포 | `genie-project-deploy` | 프로젝트마다 다른 배포 단계와 명령을 직접 설정하고 이후 실행·검증·리비전을 추적합니다. | 배포 환경이 정해진 뒤 |
+| 모바일 출시 | `genie-mobile-release` | Android·iOS 버전, 서명 참조, 릴리스 빌드, 테스트 트랙과 단계적 출시를 추적합니다. | 모바일 배포 후보 확정 후 |
+
+현재 카탈로그는 오케스트레이터 1개와 전문 워커 21개로 구성됩니다. 프로젝트 설정에서는 이 전체를 복사하는 것이 아니라 감지된 트랙에 해당하는 워커만 활성화합니다.
+
+### 프레임워크별 동작
+
+- Flutter: `flutter analyze`, widget·integration test, flavor, Android/iOS 빌드와 서명 구조를 프로젝트 규칙에 맞게 사용합니다.
+- React Native·Expo: Metro, Jest, Detox·Maestro 등 기존 도구, native module, Gradle·Xcode 또는 EAS 흐름을 구분합니다.
+- 웹: SPA·SSR·SSG·PWA 여부에 따라 hydration, 라우팅, 캐시, service worker와 오프라인 검증을 조건부로 추가합니다.
+- OTA: Expo Updates·CodePush 같은 기능이 감지돼도 스토어 바이너리 출시와 별도 단계로 추적하며 런타임 호환성과 롤백을 확인합니다.
 
 ### 프로젝트 배포를 별도 설정하는 이유
 
@@ -156,6 +194,7 @@ docs/genie/
 - Git 권장: 브랜치·커밋·변경 이후의 stale 판정에 사용
 - Python 3.10 이상: Genie 이력 도구에 사용하며 외부 패키지는 필요 없음
 - 브라우저 제어 도구: `qa`, `qa-only`, `benchmark`, `canary`에 필요
+- 모바일 SDK와 기기·에뮬레이터: 모바일 QA·출시 스킬에 필요하며 프로젝트가 사용하는 Flutter 또는 React Native·Expo 도구를 따름
 - 선택 사항: `gh` CLI, 프로젝트별 배포 CLI와 인증
 
 브라우저나 배포 도구가 없으면 해당 스킬만 `blocked`로 기록하고 나머지 개발 흐름은 계속 사용할 수 있습니다.
