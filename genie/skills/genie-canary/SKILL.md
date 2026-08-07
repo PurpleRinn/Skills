@@ -9,7 +9,7 @@ description: Genie의 배포 후 카나리 확인 스킬. 사용자가 "지니, 
 
 ## 절차
 
-1. `docs/genie/project-deploy/config.json`과 최신 배포 기록에서 환경, URL, source commit과 리비전을 확인하라.
+1. `.genie/deploy.json`과 최신 `docs/genie/project-deploy` 기록에서 환경, URL, source commit과 리비전을 확인하라.
 2. 설정이 없거나 배포 식별자를 연결할 수 없으면 임의 URL을 추측하지 말고 `blocked`로 보고하라.
 3. health endpoint와 핵심 공개 페이지의 상태 코드, 응답 시간과 주요 헤더를 확인하라.
 4. 브라우저에서 지정된 사용자 여정을 실행하고 콘솔·네트워크 오류를 확인하라.

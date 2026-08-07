@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
+import hashlib
 import json
 import os
 import re
@@ -22,6 +23,49 @@ from urllib.parse import urlsplit, urlunsplit
 
 GENIE_ROOT = Path(__file__).resolve().parent.parent
 MANIFEST_PATH = GENIE_ROOT / "manifest.json"
+PROJECT_CONFIG_DIR = ".genie"
+PROJECT_CONFIG_NAME = "config.json"
+PROJECT_CONFIG_SCHEMA_VERSION = 1
+IGNORED_SCAN_DIRECTORIES = {
+    ".dart_tool",
+    ".git",
+    ".genie",
+    ".gradle",
+    ".idea",
+    ".next",
+    ".turbo",
+    ".venv",
+    "build",
+    "coverage",
+    "dist",
+    "docs",
+    "node_modules",
+    "target",
+    "vendor",
+}
+FRONTEND_PACKAGES = {
+    "@angular/core",
+    "@remix-run/react",
+    "@sveltejs/kit",
+    "astro",
+    "next",
+    "nuxt",
+    "react",
+    "react-dom",
+    "svelte",
+    "vite",
+    "vue",
+}
+BACKEND_PACKAGES = {
+    "@nestjs/core",
+    "@vercel/node",
+    "express",
+    "fastify",
+    "firebase-functions",
+    "hono",
+    "koa",
+    "serverless",
+}
 ALLOWED_STATUSES = {
     "completed",
     "passed",
@@ -76,6 +120,329 @@ def history_root(project: Path, manifest: dict[str, Any]) -> Path:
     return project / manifest["history_root"]
 
 
+def project_config_path(project: Path) -> Path:
+    return project / PROJECT_CONFIG_DIR / PROJECT_CONFIG_NAME
+
+
+def load_project_config(
+    project: Path, manifest: dict[str, Any], required: bool = False
+) -> dict[str, Any] | None:
+    path = project_config_path(project)
+    if not path.exists():
+        if required:
+            raise ValueError(
+                "Genie 프로젝트 설정이 없습니다. 먼저 '지니 설정' 또는 "
+                "'지니 프로젝트 설정'을 실행하세요."
+            )
+        return None
+    with path.open("r", encoding="utf-8") as handle:
+        config = json.load(handle)
+    if not isinstance(config, dict):
+        raise ValueError("Genie project config must be a JSON object")
+    if config.get("schema_version") != PROJECT_CONFIG_SCHEMA_VERSION:
+        raise ValueError("Unsupported Genie project config schema")
+    known = {skill["id"] for skill in manifest["skills"]}
+    enabled = config.get("enabled_skills")
+    if not isinstance(enabled, list) or not all(isinstance(item, str) for item in enabled):
+        raise ValueError("Genie project config requires enabled_skills")
+    unknown = sorted(set(enabled) - known)
+    if unknown:
+        raise ValueError(f"Unknown skills in Genie project config: {', '.join(unknown)}")
+    return config
+
+
+def relative_directory_glob(project: Path, directory: Path) -> str:
+    relative = directory.resolve().relative_to(project.resolve()).as_posix()
+    return "**" if relative == "." else f"{relative}/**"
+
+
+def add_path_group(groups: dict[str, set[str]], group: str, pattern: str) -> None:
+    groups.setdefault(group, set()).add(pattern)
+
+
+def read_json_object(path: Path) -> dict[str, Any]:
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            value = json.load(handle)
+        return value if isinstance(value, dict) else {}
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return {}
+
+
+def detect_project_structure(project: Path) -> dict[str, Any]:
+    technologies: set[str] = set()
+    surfaces: set[str] = set()
+    groups: dict[str, set[str]] = {
+        "flutter": set(),
+        "web": set(),
+        "web_admin": set(),
+        "backend": set(),
+        "shared": set(),
+    }
+    evidence: list[str] = []
+
+    for current, directories, files in os.walk(project):
+        current_path = Path(current)
+        relative = current_path.relative_to(project)
+        depth = len(relative.parts)
+        directories[:] = [
+            name
+            for name in directories
+            if name not in IGNORED_SCAN_DIRECTORIES and not name.startswith(".")
+        ]
+        if depth >= 4:
+            directories[:] = []
+        file_names = set(files)
+        pattern = relative_directory_glob(project, current_path)
+        lower_parts = {part.lower() for part in relative.parts}
+
+        if "pubspec.yaml" in file_names:
+            pubspec = current_path / "pubspec.yaml"
+            try:
+                content = pubspec.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                content = ""
+            if "sdk: flutter" in content or re.search(r"(?m)^flutter\s*:", content):
+                technologies.update({"dart", "flutter"})
+                surfaces.add("flutter")
+                add_path_group(groups, "flutter", pattern)
+                evidence.append(pubspec.relative_to(project).as_posix())
+
+        if "package.json" in file_names:
+            package_path = current_path / "package.json"
+            package = read_json_object(package_path)
+            dependencies = set()
+            for key in ("dependencies", "devDependencies", "peerDependencies"):
+                value = package.get(key)
+                if isinstance(value, dict):
+                    dependencies.update(str(name) for name in value)
+            technologies.add("node")
+            if dependencies & FRONTEND_PACKAGES:
+                technologies.update(sorted(dependencies & FRONTEND_PACKAGES))
+                if lower_parts & {"admin", "backoffice", "console", "dashboard"}:
+                    surfaces.add("web-admin")
+                    add_path_group(groups, "web_admin", pattern)
+                else:
+                    surfaces.add("web")
+                    add_path_group(groups, "web", pattern)
+                evidence.append(package_path.relative_to(project).as_posix())
+            if dependencies & BACKEND_PACKAGES:
+                technologies.update(sorted(dependencies & BACKEND_PACKAGES))
+                surfaces.add("backend")
+                add_path_group(groups, "backend", pattern)
+                evidence.append(package_path.relative_to(project).as_posix())
+
+        if file_names & {
+            "next.config.js",
+            "next.config.mjs",
+            "next.config.ts",
+            "vite.config.js",
+            "vite.config.ts",
+        }:
+            surfaces.add("web")
+            add_path_group(groups, "web", pattern)
+
+        if file_names & {"firebase.json", "serverless.yml", "serverless.yaml"}:
+            technologies.add("deployment-config")
+            surfaces.add("backend")
+            add_path_group(groups, "backend", pattern)
+
+        if lower_parts & {"api", "backend", "functions", "server"}:
+            if file_names & {
+                "package.json",
+                "pyproject.toml",
+                "requirements.txt",
+                "go.mod",
+                "Cargo.toml",
+            }:
+                surfaces.add("backend")
+                add_path_group(groups, "backend", pattern)
+
+        if lower_parts & {"common", "packages", "shared"}:
+            add_path_group(groups, "shared", pattern)
+
+    if not surfaces:
+        surfaces.add("library")
+
+    tracks = ["core"]
+    if surfaces & {"flutter", "web", "web-admin"}:
+        tracks.append("ui")
+    if "flutter" in surfaces:
+        tracks.append("flutter")
+    if surfaces & {"web", "web-admin"}:
+        tracks.append("web")
+    if "backend" in surfaces:
+        tracks.append("backend")
+    if surfaces & {"flutter", "web", "web-admin", "backend"}:
+        tracks.append("deploy")
+
+    if "flutter" in surfaces and surfaces & {"web", "web-admin"}:
+        profile = "flutter-web"
+    elif "flutter" in surfaces and "backend" in surfaces:
+        profile = "flutter-backend"
+    elif "flutter" in surfaces:
+        profile = "flutter"
+    elif surfaces & {"web", "web-admin"} and "backend" in surfaces:
+        profile = "web-backend"
+    elif surfaces & {"web", "web-admin"}:
+        profile = "web"
+    elif "backend" in surfaces:
+        profile = "backend"
+    else:
+        profile = "library"
+
+    normalized_groups = {
+        key: sorted(values) for key, values in groups.items() if values
+    }
+    fingerprint_source = {
+        "technologies": sorted(technologies),
+        "surfaces": sorted(surfaces),
+        "tracks": tracks,
+        "paths": normalized_groups,
+        "evidence": sorted(set(evidence)),
+    }
+    fingerprint = hashlib.sha256(
+        json.dumps(fingerprint_source, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()[:16]
+    return {
+        **fingerprint_source,
+        "profile": profile,
+        "structure_fingerprint": fingerprint,
+    }
+
+
+def normalize_skill_ids(
+    manifest: dict[str, Any], values: list[str], field_name: str
+) -> list[str]:
+    result = []
+    for value in values:
+        try:
+            skill_id = skill_lookup(manifest, value)["id"]
+        except ValueError as exc:
+            raise ValueError(f"Invalid {field_name}: {value}") from exc
+        if skill_id not in result:
+            result.append(skill_id)
+    return result
+
+
+def skill_path_patterns(skill: dict[str, Any], detected: dict[str, Any]) -> list[str]:
+    groups = detected.get("paths", {})
+    tracks = set(skill.get("tracks") or ["core"])
+    patterns: set[str] = set()
+    if "web" in tracks:
+        for group in ("web", "web_admin", "backend", "shared"):
+            patterns.update(groups.get(group, []))
+    if "flutter" in tracks:
+        for group in ("flutter", "backend", "shared"):
+            patterns.update(groups.get(group, []))
+    if "backend" in tracks:
+        for group in ("backend", "shared"):
+            patterns.update(groups.get(group, []))
+    if "ui" in tracks:
+        for group in ("flutter", "web", "web_admin", "shared"):
+            patterns.update(groups.get(group, []))
+    if "deploy" in tracks:
+        for values in groups.values():
+            patterns.update(values)
+        patterns.update({".github/**", ".genie/**", "Dockerfile*", "firebase.json"})
+    if not patterns:
+        patterns.update(skill.get("invalidated_by") or [])
+    return sorted(patterns)
+
+
+def proposed_project_config(
+    project: Path,
+    manifest: dict[str, Any],
+    existing: dict[str, Any] | None = None,
+    enable: list[str] | None = None,
+    disable: list[str] | None = None,
+) -> dict[str, Any]:
+    detected = detect_project_structure(project)
+    overrides = existing.get("overrides", {}) if existing else {}
+    if not isinstance(overrides, dict):
+        overrides = {}
+    enabled_overrides = normalize_skill_ids(
+        manifest, list(overrides.get("enable") or []), "enabled skill"
+    )
+    disabled_overrides = normalize_skill_ids(
+        manifest, list(overrides.get("disable") or []), "disabled skill"
+    )
+    for skill_id in normalize_skill_ids(manifest, list(enable or []), "enabled skill"):
+        if skill_id in disabled_overrides:
+            disabled_overrides.remove(skill_id)
+        if skill_id not in enabled_overrides:
+            enabled_overrides.append(skill_id)
+    for skill_id in normalize_skill_ids(manifest, list(disable or []), "disabled skill"):
+        if skill_id in enabled_overrides:
+            enabled_overrides.remove(skill_id)
+        if skill_id not in disabled_overrides:
+            disabled_overrides.append(skill_id)
+    disabled_set = set(disabled_overrides)
+
+    tracks = set(detected["tracks"])
+    recommended = [
+        skill["id"]
+        for skill in sorted(manifest["skills"], key=lambda item: item["order"])
+        if tracks.intersection(skill.get("tracks") or ["core"])
+    ]
+    enabled_set = (set(recommended) | set(enabled_overrides)) - disabled_set
+    enabled_skills = [
+        skill["id"]
+        for skill in sorted(manifest["skills"], key=lambda item: item["order"])
+        if skill["id"] in enabled_set
+    ]
+    required_skills = [
+        skill["id"]
+        for skill in manifest["skills"]
+        if skill["id"] in enabled_set and skill.get("required_by_default")
+    ]
+    conditional_skills = [item for item in enabled_skills if item not in required_skills]
+    skill_paths = {
+        skill["id"]: skill_path_patterns(skill, detected)
+        for skill in manifest["skills"]
+        if skill["id"] in enabled_set
+    }
+    timestamp = now_local().isoformat(timespec="seconds")
+    return {
+        "schema_version": PROJECT_CONFIG_SCHEMA_VERSION,
+        "catalog_version": manifest.get("catalog_version", 1),
+        "profile": detected["profile"],
+        "configured_at": existing.get("configured_at", timestamp) if existing else timestamp,
+        "updated_at": timestamp,
+        "structure_fingerprint": detected["structure_fingerprint"],
+        "detected": {
+            "technologies": detected["technologies"],
+            "surfaces": detected["surfaces"],
+            "evidence": detected["evidence"],
+        },
+        "tracks": detected["tracks"],
+        "paths": detected["paths"],
+        "enabled_skills": enabled_skills,
+        "required_skills": required_skills,
+        "conditional_skills": conditional_skills,
+        "skill_paths": skill_paths,
+        "overrides": {
+            "enable": enabled_overrides,
+            "disable": disabled_overrides,
+        },
+    }
+
+
+def config_changes(
+    current: dict[str, Any] | None, proposed: dict[str, Any]
+) -> dict[str, list[str]]:
+    current_skills = set(current.get("enabled_skills", [])) if current else set()
+    proposed_skills = set(proposed.get("enabled_skills", []))
+    current_surfaces = set((current or {}).get("detected", {}).get("surfaces", []))
+    proposed_surfaces = set(proposed.get("detected", {}).get("surfaces", []))
+    return {
+        "skills_added": sorted(proposed_skills - current_skills),
+        "skills_removed": sorted(current_skills - proposed_skills),
+        "surfaces_added": sorted(proposed_surfaces - current_surfaces),
+        "surfaces_removed": sorted(current_surfaces - proposed_surfaces),
+    }
+
+
 def atomic_write(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(
@@ -114,6 +481,11 @@ def print_created_notice(created: bool) -> None:
             "Genie 실행 기록 폴더 docs/genie가 없습니다. "
             "이번 실행부터 결과 요약을 보관하기 위해 폴더를 생성합니다."
         )
+
+
+def print_setup_required(project: Path) -> None:
+    print("Genie 프로젝트 설정이 없습니다. 설정부터 진행하겠습니다.")
+    print(f"GENIE_SETUP_REQUIRED={project_config_path(project)}")
 
 
 def sanitize_url(match: re.Match[str]) -> str:
@@ -183,8 +555,82 @@ def markdown_list(values: Any, empty: str) -> str:
 def command_init(args: argparse.Namespace) -> int:
     manifest = load_manifest()
     project = resolve_project(args.project)
+    config = load_project_config(project, manifest)
+    if config is None:
+        print_setup_required(project)
+        return 0
     root, created = ensure_history(project, manifest)
     print_created_notice(created)
+    print(f"GENIE_CONFIG={project_config_path(project)}")
+    print(f"GENIE_HISTORY={root}")
+    return 0
+
+
+def print_config_report(
+    project: Path,
+    current: dict[str, Any] | None,
+    proposed: dict[str, Any],
+    changes: dict[str, list[str]],
+) -> None:
+    print(f"프로젝트: {project}")
+    print(f"추천 프로필: {proposed['profile']}")
+    print(f"감지 영역: {', '.join(proposed['detected']['surfaces'])}")
+    technologies = proposed["detected"].get("technologies") or ["명확한 프레임워크 없음"]
+    print(f"감지 기술: {', '.join(technologies)}")
+    print(f"활성 트랙: {', '.join(proposed['tracks'])}")
+    print(f"활성 스킬: {len(proposed['enabled_skills'])}개")
+    for skill_id in proposed["enabled_skills"]:
+        marker = "필수" if skill_id in proposed["required_skills"] else "조건부"
+        print(f"- {skill_id} ({marker})")
+    if current is None:
+        print("\n현재 설정이 없습니다. 위 구성이 새로 생성됩니다.")
+    elif any(changes.values()):
+        print("\n현재 설정과 비교:")
+        labels = {
+            "surfaces_added": "추가 영역",
+            "surfaces_removed": "제거 영역",
+            "skills_added": "추가 스킬",
+            "skills_removed": "제거 스킬",
+        }
+        for key, label in labels.items():
+            if changes[key]:
+                print(f"- {label}: {', '.join(changes[key])}")
+    else:
+        print("\n현재 설정이 프로젝트 구조 및 스킬 카탈로그와 일치합니다.")
+
+
+def command_configure(args: argparse.Namespace) -> int:
+    manifest = load_manifest()
+    project = resolve_project(args.project)
+    current = load_project_config(project, manifest)
+    proposed = proposed_project_config(
+        project,
+        manifest,
+        existing=current,
+        enable=args.enable,
+        disable=args.disable,
+    )
+    reject_sensitive_config(proposed)
+    changes = config_changes(current, proposed)
+    if args.format == "json":
+        print(
+            json.dumps(
+                {"project": str(project), "changes": changes, "config": proposed},
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+    else:
+        print_config_report(project, current, proposed, changes)
+    if not args.apply:
+        print("\n검사만 수행했습니다. 확인 후 --apply를 사용하면 설정을 저장합니다.")
+        return 0
+
+    destination = project_config_path(project)
+    atomic_write(destination, json.dumps(proposed, ensure_ascii=False, indent=2) + "\n")
+    root, created = ensure_history(project, manifest)
+    print_created_notice(created)
+    print(f"GENIE_CONFIG={destination}")
     print(f"GENIE_HISTORY={root}")
     return 0
 
@@ -203,6 +649,8 @@ def load_payload(path_value: str) -> dict[str, Any]:
 def command_record(args: argparse.Namespace) -> int:
     manifest = load_manifest()
     project = resolve_project(args.project)
+    config = load_project_config(project, manifest, required=True)
+    assert config is not None
     root, created = ensure_history(project, manifest)
     print_created_notice(created)
     payload = load_payload(args.payload)
@@ -210,6 +658,11 @@ def command_record(args: argparse.Namespace) -> int:
     if not payload.get("skill"):
         raise ValueError("Payload field 'skill' is required")
     skill = skill_lookup(manifest, str(payload["skill"]))
+    if skill["id"] not in config["enabled_skills"]:
+        raise ValueError(
+            f"{skill['id']} is not enabled for this project. "
+            "Run '지니 프로젝트 설정' to review the active skill set."
+        )
     status = str(payload.get("status", "completed"))
     if status not in ALLOWED_STATUSES:
         raise ValueError(f"Unsupported status: {status}")
@@ -240,6 +693,8 @@ commit: {yaml_value(commit)}
 work_item: {yaml_value(work_item)}
 scope: {yaml_value(scope)}
 environment: {yaml_value(environment)}
+config_profile: {yaml_value(config.get('profile', 'custom'))}
+config_fingerprint: {yaml_value(config.get('structure_fingerprint', 'unknown'))}
 {"\n".join(optional_meta)}
 ---
 
@@ -328,7 +783,13 @@ def matches_any(path: str, patterns: list[str]) -> bool:
     return any(fnmatch.fnmatch(path, pattern) for pattern in patterns)
 
 
-def freshness_state(project: Path, current_commit: str, skill: dict[str, Any], record: dict[str, Any] | None) -> str:
+def freshness_state(
+    project: Path,
+    current_commit: str,
+    skill: dict[str, Any],
+    record: dict[str, Any] | None,
+    config: dict[str, Any],
+) -> str:
     if record is None:
         return "never-run"
     status = str(record.get("status", "unknown"))
@@ -344,26 +805,39 @@ def freshness_state(project: Path, current_commit: str, skill: dict[str, Any], r
         return "unknown"
     if recorded_commit == current_commit or current_commit.startswith(recorded_commit):
         return "current"
-    if policy == "commit":
-        files = changed_files(project, recorded_commit)
-        return "current" if files == [] else "stale"
     files = changed_files(project, recorded_commit)
     if files is None:
         return "stale"
-    patterns = list(skill.get("invalidated_by") or [])
+    patterns = list(
+        (config.get("skill_paths") or {}).get(skill["id"])
+        or skill.get("invalidated_by")
+        or []
+    )
     return "stale" if any(matches_any(path, patterns) for path in files) else "current"
 
 
-def status_rows(project: Path, manifest: dict[str, Any], selected: str | None = None) -> list[dict[str, Any]]:
+def status_rows(
+    project: Path,
+    manifest: dict[str, Any],
+    config: dict[str, Any],
+    selected: str | None = None,
+) -> list[dict[str, Any]]:
     root, created = ensure_history(project, manifest)
     print_created_notice(created)
     _, current_commit = git_context(project)
     rows = []
+    enabled = set(config["enabled_skills"])
+    wanted = skill_lookup(manifest, selected) if selected else None
+    if wanted and wanted["id"] not in enabled:
+        raise ValueError(
+            f"{wanted['id']} is not enabled for profile {config.get('profile', 'custom')}. "
+            "Run '지니 프로젝트 설정' to change the active skill set."
+        )
     for skill in sorted(manifest["skills"], key=lambda item: item["order"]):
-        if selected:
-            wanted = skill_lookup(manifest, selected)
-            if skill["id"] != wanted["id"]:
-                continue
+        if skill["id"] not in enabled:
+            continue
+        if wanted and skill["id"] != wanted["id"]:
+            continue
         record = latest_record(root, skill)
         rows.append(
             {
@@ -372,9 +846,9 @@ def status_rows(project: Path, manifest: dict[str, Any], selected: str | None = 
                 "description": skill["description"],
                 "last_run": record.get("finished_at", "-") if record else "-",
                 "result": record.get("status", "-") if record else "-",
-                "freshness": freshness_state(project, current_commit, skill, record),
+                "freshness": freshness_state(project, current_commit, skill, record, config),
                 "work_item": record.get("work_item", "-") if record else "-",
-                "required_by_default": bool(skill.get("required_by_default")),
+                "required_by_default": skill["id"] in set(config.get("required_skills", [])),
             }
         )
     return rows
@@ -401,11 +875,46 @@ def next_recommendation(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
 def command_status(args: argparse.Namespace) -> int:
     manifest = load_manifest()
     project = resolve_project(args.project)
-    rows = status_rows(project, manifest, args.skill)
+    config = load_project_config(project, manifest)
+    if config is None:
+        print_setup_required(project)
+        print(
+            "다음: 프로젝트 구조를 검사한 뒤 configure --apply로 "
+            ".genie/config.json을 생성하세요."
+        )
+        return 0
+    rows = status_rows(project, manifest, config, args.skill)
+    proposed = proposed_project_config(project, manifest, existing=config)
+    changes = config_changes(config, proposed)
+    config_drift = (
+        config.get("structure_fingerprint") != proposed.get("structure_fingerprint")
+        or config.get("catalog_version") != manifest.get("catalog_version", 1)
+        or any(changes.values())
+    )
     if args.format == "json":
-        print(json.dumps(rows, ensure_ascii=False, indent=2))
+        print(
+            json.dumps(
+                {
+                    "profile": config.get("profile"),
+                    "config_drift": config_drift,
+                    "changes": changes,
+                    "rows": rows,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
         return 0
 
+    print(
+        f"Genie 프로필: {config.get('profile', 'custom')} "
+        f"({len(config['enabled_skills'])}개 활성 스킬)"
+    )
+    if config_drift:
+        print(
+            "설정 점검 필요: 프로젝트 구조 또는 Genie 카탈로그가 변경됐습니다. "
+            "'지니 프로젝트 설정'으로 다시 확인하세요.\n"
+        )
     print("| 단계 | 스킬 | 마지막 실행 | 결과 | 유효성 | 대상 |")
     print("| --- | --- | --- | --- | --- | --- |")
     for row in rows:
@@ -421,7 +930,11 @@ def command_status(args: argparse.Namespace) -> int:
             f"{recommendation['description']} ({recommendation['freshness']})"
         )
     elif args.skill:
-        print("\n선택한 스킬의 최신 기록은 현재 유효합니다.")
+        selected_state = rows[0]["freshness"] if rows else "unknown"
+        if selected_state in {"current", "not-applicable"}:
+            print("\n선택한 스킬의 최신 기록은 현재 유효합니다.")
+        else:
+            print(f"\n선택한 스킬 상태: {selected_state}")
     else:
         print("\n기본 필수 단계는 현재 기록 기준으로 유효합니다. 조건부 단계를 범위에 맞게 검토하세요.")
     return 0
@@ -430,6 +943,10 @@ def command_status(args: argparse.Namespace) -> int:
 def command_history(args: argparse.Namespace) -> int:
     manifest = load_manifest()
     project = resolve_project(args.project)
+    config = load_project_config(project, manifest)
+    if config is None:
+        print_setup_required(project)
+        return 0
     root, created = ensure_history(project, manifest)
     print_created_notice(created)
     skill = skill_lookup(manifest, args.skill)
@@ -467,13 +984,21 @@ def reject_sensitive_config(value: Any, path: str = "") -> None:
 def command_configure_deploy(args: argparse.Namespace) -> int:
     manifest = load_manifest()
     project = resolve_project(args.project)
+    config = load_project_config(project, manifest, required=True)
+    assert config is not None
+    deploy_skill = skill_lookup(manifest, "project-deploy")
+    if deploy_skill["id"] not in config["enabled_skills"]:
+        raise ValueError(
+            "genie-project-deploy is not enabled for this project. "
+            "Run '지니 프로젝트 설정' first."
+        )
     root, created = ensure_history(project, manifest)
     print_created_notice(created)
     config = load_payload(args.payload)
     reject_sensitive_config(config)
     config["schema_version"] = 1
     config["updated_at"] = now_local().isoformat(timespec="seconds")
-    destination = root / "project-deploy" / "config.json"
+    destination = project / PROJECT_CONFIG_DIR / "deploy.json"
     atomic_write(destination, json.dumps(config, ensure_ascii=False, indent=2) + "\n")
     print(f"GENIE_DEPLOY_CONFIG={destination}")
     return 0
@@ -493,6 +1018,8 @@ def command_doctor(_: argparse.Namespace) -> int:
         errors.append("Duplicate worker skill ids")
     if not (GENIE_ROOT / "SKILL.md").exists():
         errors.append("Missing Genie orchestrator SKILL.md")
+    if not (GENIE_ROOT / "references" / "project-config.md").exists():
+        errors.append("Missing project config reference")
     for skill_id in ids:
         skill_file = GENIE_ROOT / "skills" / str(skill_id) / "SKILL.md"
         if not skill_file.exists():
@@ -509,9 +1036,23 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Genie development workflow history helper")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    init_parser = subparsers.add_parser("init", help="Create docs/genie metadata when missing")
+    init_parser = subparsers.add_parser(
+        "init", help="Initialize docs/genie after project configuration exists"
+    )
     init_parser.add_argument("--project")
     init_parser.set_defaults(func=command_init)
+
+    configure_parser = subparsers.add_parser(
+        "configure", help="Detect project structure and propose or apply Genie configuration"
+    )
+    configure_parser.add_argument("--project")
+    configure_parser.add_argument("--apply", action="store_true")
+    configure_parser.add_argument("--enable", action="append", default=[])
+    configure_parser.add_argument("--disable", action="append", default=[])
+    configure_parser.add_argument(
+        "--format", choices=("markdown", "json"), default="markdown"
+    )
+    configure_parser.set_defaults(func=command_configure)
 
     record_parser = subparsers.add_parser("record", help="Write one immutable skill summary")
     record_parser.add_argument("--project")

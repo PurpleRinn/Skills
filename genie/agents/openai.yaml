@@ -1,4 +1,4 @@
 interface:
   display_name: "Genie Development Assistant"
-  short_description: "Track development stages, decisions, and validation history"
-  default_prompt: "Use $genie to show the current development stage and recommend the next action."
+  short_description: "Configure project skills and track development history"
+  default_prompt: "Use $genie to configure this project or show its current development stage and next action."
