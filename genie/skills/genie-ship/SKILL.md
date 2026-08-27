@@ -19,4 +19,12 @@ description: Genie의 변경 출하 스킬. 사용자가 "지니, ship 해줘", 
 8. PR 본문에는 변경 이유, 영향, 검증, 미완료와 배포 주의를 포함하라.
 9. 배포는 이 스킬에서 추측해 실행하지 말고 `genie-project-deploy`로 넘겨라.
 
-force push, history rewrite, 자동 merge는 별도 명시 없이 수행하지 마라. 직접 호출이면 `../../references/worker-contract.md`에 따라 `passed`, `failed`, `partial` 또는 `blocked` 기록을 남겨라.
+## 실행 기록과 종료 규칙
+
+- 직접 호출이면 실제 기능 커밋과 push를 완료한 뒤 `../../references/worker-contract.md`에 따라 `passed`, `failed`, `partial` 또는 `blocked` 기록을 논리적인 출하 작업당 한 번만 남겨라.
+- 기록의 `commit`은 검증하고 출하한 기능 커밋을 가리킨다. 이후 기록 파일만 담는 정리 커밋을 가리키도록 갱신하지 마라.
+- 추적 대상인 `docs/genie` 기록 때문에 작업 트리가 변경되면, 사용자가 승인한 출하 범위 안에서 기록들을 별도의 정리 커밋으로 묶어 마지막으로 push하고 작업 트리가 깨끗한지 확인하라.
+- 변경 내용이 Genie 실행 기록의 추가·정리뿐인 마지막 커밋과 push는 출하 작업의 종결 bookkeeping으로 취급한다. 이 작업에는 `genie-ship`을 다시 호출하거나 새 Genie 실행 기록을 만들지 마라. 재귀적인 기록 생성을 여기서 종료하라.
+- 기록 외 코드·설정·문서 변경이 함께 있으면 기록 전용 작업으로 간주하지 말고 일반 출하 절차를 적용하라.
+
+force push, history rewrite, 자동 merge는 별도 명시 없이 수행하지 마라.
